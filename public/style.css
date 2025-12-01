@@ -1,0 +1,66 @@
+/* Fichier : public/style.css */
+
+/* Styles généraux de la Modale */
+.modal {
+  display: none; /* Masquée par défaut */
+  position: fixed;
+  z-index: 1050 !important; /* Assurez-vous qu'elle est au-dessus de la carte */
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.modal-content {
+  background-color: #fefefe;
+  margin: 10% auto; /* Centrage */
+  padding: 20px;
+  border: 1px solid #888;
+  width: 80%;
+  max-width: 500px;
+  border-radius: 8px;
+}
+
+.close-btn {
+  color: #aaa;
+  float: right;
+  font-size: 28px;
+  font-weight: bold;
+}
+
+.close-btn:hover,
+.close-btn:focus {
+  color: #000;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+/* Styles pour le formulaire */
+#point-form label,
+#point-form input {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+}
+#point-form button {
+  margin-top: 20px;
+  padding: 10px 20px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.modal-backdrop {
+  z-index: 1040 !important;
+}
+#point-modal {
+  z-index: 2000 !important;
+}
+
+.leaflet-container {
+  z-index: 1;
+}
