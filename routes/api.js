@@ -24,7 +24,7 @@ router.get("/items", async (req, res) => {
   try {
     // Limitation conseillée : Le jeu de données est très grand.
     // Vous pouvez ajuster cette limite ou ajouter une pagination/filtrage.
-    const items = await Restaurant.find().limit(2000);
+    const items = await Restaurant.find();
     res.status(200).json(items);
   } catch (err) {
     handleError(res, err);
@@ -148,7 +148,7 @@ router.get("/stats/scores-by-cuisine", async (req, res) => {
  * Nécessite les paramètres de requête: ?lng=-73.856077&lat=40.848447&distance=1000
  */
 router.get("/stats/nearby-points", async (req, res) => {
-  const { lng, lat, distance = 1000 } = req.query; // distance en mètres par défaut
+  const { lng, lat, distance = 400 } = req.query; // distance en mètres par défaut
 
   if (!lng || !lat) {
     return res

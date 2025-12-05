@@ -1,456 +1,645 @@
-window.allRestaurantData = [];
+/**
+ * Application Web Cartographique M2 MIAGE
+ * Gestion complète : CRUD, Filtres, Stats, Clustering, Heatmap, Proximité, Graphiques
+ */
+
+// ==========================================
+// 1. CONSTANTES & CONFIGURATION
+// ==========================================
 const API_URL = "http://localhost:3000/api/items";
 const API_STATS_URL = "http://localhost:3000/api/stats/scores-by-cuisine";
+const API_NEARBY_URL = "http://localhost:3000/api/stats/nearby-points";
 
-// 1. Initialisation de la carte
-const map = L.map("map").setView([40.7128, -74.006], 11); // Centré sur New York (approximativement)
+const SCORE_COLORS = {
+  "0-5": "#198754", // Vert
+  "6-10": "#ffc107", // Jaune
+  "11-15": "#fd7e14", // Orange
+  "16-20": "#dc3545", // Rouge
+  "21+": "#212529", // Noir
+};
+
+// ==========================================
+// 2. ÉTAT GLOBAL
+// ==========================================
+let allRestaurantData = [];
+let currentLegend = null;
+let tempMarker = null;
+
+// Modes avancés
+let searchModeActive = false;
+let heatmapActive = false;
+let heatLayer = null;
+let nearbyCircle = null;
+
+// Instances Chart.js (pour pouvoir les détruire/mettre à jour)
+let chartsInstances = {
+  cuisine: null,
+  borough: null,
+};
+
+// Initialisation Carte
+const map = L.map("map").setView([40.7128, -74.006], 11);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution: "© OpenStreetMap contributors",
 }).addTo(map);
-const pointModal = new bootstrap.Modal(
-  document.getElementById("point-modal"),
-  {}
-);
 
-let markers = L.layerGroup().addTo(map);
+// Layers
+const markersLayer = L.markerClusterGroup({
+  chunkedLoading: true,
+  disableClusteringAtZoom: 16,
+}).addTo(map);
 
-// Fonction utilitaire pour le style dynamique
-function getMarkerStyle(cuisine) {
+const nearbyMarkersLayer = L.layerGroup().addTo(map);
+
+// Modales Bootstrap
+let pointModal;
+let chartsModal; // 🚨 NOUVEAU
+
+// ==========================================
+// 3. UTILITAIRES
+// ==========================================
+
+function getRecentScore(grades) {
+  if (grades && grades.length > 0) return grades[0].score;
+  return 999;
+}
+
+function getMarkerStyle(item) {
+  const score = getRecentScore(item.grades);
   let color;
-  switch (cuisine) {
-    // Exemple de style dynamique par cuisine (à compléter avec plus de catégories)
-    case "Bakery":
-      color = "blue";
-      break;
-    case "Pizza":
-      color = "red";
-      break;
-    case "Chinese":
-      color = "green";
-      break;
-    default:
-      color = "gray";
-  }
+  if (score <= 5) color = SCORE_COLORS["0-5"];
+  else if (score <= 10) color = SCORE_COLORS["6-10"];
+  else if (score <= 15) color = SCORE_COLORS["11-15"];
+  else if (score <= 20) color = SCORE_COLORS["16-20"];
+  else color = SCORE_COLORS["21+"];
+
   return {
     color: color,
     fillColor: color,
-    fillOpacity: 0.6,
+    fillOpacity: 0.8,
     radius: 8,
+    weight: 1,
+    color: "#fff",
   };
 }
 
-function createStatsTableHTML(stats, isFullTable = false) {
-  let tableHTML = `
-        <table class="table table-sm table-striped">
-            <thead class="table-dark">
-                <tr>
-                    <th>Cuisine</th>
-                    <th>Score Moyen (plus bas = mieux)</th>
-                    ${isFullTable ? "<th>Nombre d'évaluations</th>" : ""}
-                </tr>
-            </thead>
-            <tbody>
-    `;
-
-  stats.forEach((stat) => {
-    const formattedScore = stat.averageScore.toFixed(2);
-
-    // Logique de couleur pour le score (Score plus bas = mieux)
-    let colorClass = "text-dark";
-    if (stat.averageScore < 7) {
-      colorClass = "text-success fw-bold"; // Très bon score
-    } else if (stat.averageScore < 15) {
-      colorClass = "text-warning fw-bold"; // Score moyen
-    } else {
-      colorClass = "text-danger fw-bold"; // Mauvais score
+function updateLegend() {
+  if (currentLegend) map.removeControl(currentLegend);
+  const legend = L.control({ position: "bottomright" });
+  legend.onAdd = function () {
+    const div = L.DomUtil.create(
+      "div",
+      "info legend bg-white p-2 border rounded shadow-sm"
+    );
+    div.innerHTML = '<h6 class="fw-bold mb-2">Note d\'inspection</h6>';
+    const categories = {
+      "0 - 5 (Excellent)": SCORE_COLORS["0-5"],
+      "6 - 10 (Bon)": SCORE_COLORS["6-10"],
+      "11 - 15 (Moyen)": SCORE_COLORS["11-15"],
+      "16 - 20 (Mauvais)": SCORE_COLORS["16-20"],
+      "21+ / Inconnu": SCORE_COLORS["21+"],
+    };
+    for (const label in categories) {
+      div.innerHTML += `<div class="d-flex align-items-center mb-1"><i style="background:${categories[label]}; width: 15px; height: 15px; display: inline-block; margin-right: 8px; border-radius: 50%;"></i><small>${label}</small></div>`;
     }
-
-    tableHTML += `
-            <tr>
-                <td>${stat._id}</td>
-                <td class="${colorClass}">${formattedScore}</td>
-                ${isFullTable ? `<td>${stat.count}</td>` : ""}
-            </tr>
-        `;
-  });
-
-  tableHTML += "</tbody></table>";
-  return tableHTML;
+    return div;
+  };
+  legend.addTo(map);
+  currentLegend = legend;
 }
 
-function populateCuisineFilter(data) {
-  const cuisineSet = new Set();
-  data.forEach((item) => {
-    if (item.cuisine) {
-      cuisineSet.add(item.cuisine);
-    }
-  });
-
-  const filterSelect = document.getElementById("cuisine-filter");
-  filterSelect.innerHTML = '<option value="">Toutes les cuisines</option>'; // Réinitialiser
-
-  // Trier les cuisines par ordre alphabétique
-  const sortedCuisines = Array.from(cuisineSet).sort();
-
-  sortedCuisines.forEach((cuisine) => {
-    const option = document.createElement("option");
-    option.value = cuisine;
-    option.textContent = cuisine;
-    filterSelect.appendChild(option);
-  });
-
-  // Écouter l'événement de changement pour appliquer le filtre
-  filterSelect.addEventListener("change", applyFilters);
-}
-
-function populateBorough(data) {
-  const boroughSet = new Set();
-  data.forEach((item) => {
-    if (item.borough) {
-      boroughSet.add(item.borough);
-    }
-  });
-
-  const boroughFilterSelect = document.getElementById("borough-filter");
-  boroughFilterSelect.innerHTML =
-    '<option value="">Tous les quartiers</option>'; // Réinitialiser
-
-  // Trier les quartiers par ordre alphabétique
-  const sortedBoroughs = Array.from(boroughSet).sort();
-
-  sortedBoroughs.forEach((borough) => {
-    const option = document.createElement("option");
-    option.value = borough;
-    option.textContent = borough;
-    boroughFilterSelect.appendChild(option);
-  });
-
-  // Écouter l'événement de changement pour appliquer le filtre
-  boroughFilterSelect.addEventListener("change", applyFilters);
-}
+// ==========================================
+// 4. CHARGEMENT API
+// ==========================================
 
 async function loadPoints() {
   try {
     const response = await fetch(API_URL);
-    if (!response.ok) throw new Error("Erreur de chargement des données API");
-
+    if (!response.ok) throw new Error("Erreur API");
     const data = await response.json();
-
-    // Stocker toutes les données chargées pour le filtrage
     window.allRestaurantData = data;
 
-    populateCuisineFilter(data);
+    populateSelectFilter(data, "cuisine", "cuisine-filter");
+    populateSelectFilter(data, "borough", "borough-filter");
 
-    populateBorough(data);
+    if (heatmapActive) updateHeatmapData(data);
+    else renderPoints(data);
 
-    // Rendu des points
-    renderPoints(data);
+    // Mettre à jour les graphiques avec les données initiales
+    updateCharts(data);
   } catch (error) {
-    console.error("Erreur lors du chargement des points:", error);
+    console.error("Erreur loadPoints:", error);
   }
 }
 
-// Fonction pour rendre les points (isolée pour être réutilisée par le filtre)
 function renderPoints(data) {
-  // 1. Supprimer les marqueurs existants (méthode L.layerGroup)
-  markers.clearLayers();
+  if (heatmapActive) return;
+  markersLayer.clearLayers();
+  updateLegend();
 
+  const markersToAdd = [];
   data.forEach((item) => {
-    // Vérification de la présence des coordonnées
-    if (item.address && item.address.coord && item.address.coord.coordinates) {
-      // 2. Déstructuration : [lng, lat] de MongoDB
-      var [lng, lat] = item.address.coord.coordinates;
-
-      // 3. Création du marqueur : [lat, lng] pour Leaflet, avec styleMap (styleMap est getMarkerStyle dans notre code)
-      var marker = L.circleMarker([lat, lng], getMarkerStyle(item.cuisine));
-
-      // Stocker les données pour l'édition/suppression
+    if (item.address?.coord?.coordinates) {
+      const [lng, lat] = item.address.coord.coordinates;
+      const score = getRecentScore(item.grades);
+      const marker = L.circleMarker([lat, lng], getMarkerStyle(item));
       marker.itemData = item;
 
-      // Logique de survol (MouseOver/MouseOut) :
-      marker.on("mouseover", function () {
-        this.setRadius(15);
-        this.setStyle({ weight: 4, opacity: 1 });
-        this.bindPopup(
-          `<b>${item.name}</b><br/>Cuisine: ${item.cuisine}<br/>Borough: ${item.borough}`
-        ).openPopup();
-      });
-
-      marker.on("mouseout", function () {
-        this.setRadius(8); // Revenir à la taille par défaut
-        this.setStyle(getMarkerStyle(item.cuisine));
-      });
-
-      // Événement clic pour les popups (qui contiennent les boutons Editer/Supprimer)
-      marker.on("click", function () {
-        this.bindPopup(
-          `<b>${item.name}</b><br>
-                    Cuisine: ${item.cuisine}<br>
-                    Borough: ${item.borough}<br>
-                    <button onclick="handleEdit('${item._id}')">✏️ Modifier</button>
-                    <button onclick="handleDelete('${item._id}')">🗑️ Supprimer</button>`
-        ).openPopup();
-      });
-
-      marker.addTo(markers); // Ajout au groupe de calques
-    } else {
-      console.warn(
-        `Point ${item.name || item._id} ignoré : Coordonnées manquantes.`
-      );
+      const popupContent = `
+                <div class="text-center">
+                    <strong>${item.name}</strong><br>
+                    <span class="badge bg-secondary">${item.cuisine}</span><br>
+                    <small>${item.borough}</small><br>
+                    <strong>Note: ${score === 999 ? "N/A" : score}</strong><br>
+                    <div class="mt-2 btn-group btn-group-sm">
+                        <button class="btn btn-primary" onclick="handleEdit('${
+                          item._id
+                        }')">✏️</button>
+                        <button class="btn btn-danger" onclick="handleDelete('${
+                          item._id
+                        }')">🗑️</button>
+                    </div>
+                </div>`;
+      marker.bindPopup(popupContent);
+      markersToAdd.push(marker);
     }
   });
+  markersLayer.addLayers(markersToAdd);
 }
 
-// 3. Gestion des Interactions (CRUD)
+// ==========================================
+// 5. FILTRES
+// ==========================================
 
-// Fonction d'exemple pour la suppression (appelé depuis le Popup)
-async function handleDelete(id) {
-  if (!confirm("Êtes-vous sûr de vouloir supprimer ce point ?")) return;
-
-  try {
-    const response = await fetch(`${API_URL}/${id}`, {
-      method: "DELETE",
-    });
-
-    if (response.ok) {
-      alert("Point supprimé avec succès !");
-      loadPoints(); // Rafraîchir la carte
-    } else {
-      alert("Erreur lors de la suppression.");
-    }
-  } catch (error) {
-    console.error("Erreur DELETE:", error);
-  }
-}
-
-// Fonction pour l'ajout (sélection de position par clic sur la carte)
-let tempMarker = null;
-map.on("click", function (e) {
-  const { lat, lng } = e.latlng;
-
-  // Supprimer le marqueur temporaire précédent
-  if (tempMarker) map.removeLayer(tempMarker);
-
-  // Créer un nouveau marqueur temporaire
-  tempMarker = L.marker([lat, lng])
-    .addTo(map)
-    .bindPopup(
-      `
-            Position sélectionnée: Lat ${lat.toFixed(4)}, Lng ${lng.toFixed(
-        4
-      )}<br>
-            <button onclick="openAddForm('${lng}', '${lat}')">Ajouter un point ici</button>
-        `
-    )
-    .openPopup();
-});
-
-// Variable pour stocker temporairement les coordonnées sélectionnées
-let currentLng = null;
-let currentLat = null;
-
-// Fonction de simulation pour ouvrir/remplir un formulaire (vous devrez créer le HTML)
-function openAddForm(lng, lat, existingItem = null) {
-  const modalTitle = document.getElementById("modal-title");
-  const submitBtn = document.getElementById("submit-btn");
-  const coordsDisplay = document.getElementById("coords-display");
-
-  // Remplir les champs cachés pour les coordonnées
-  document.getElementById("point-lng").value = lng;
-  document.getElementById("point-lat").value = lat;
-
-  if (existingItem) {
-    // --- Mode ÉDITION (PUT) ---
-    modalTitle.textContent = "Modifier le Restaurant : " + existingItem.name;
-    submitBtn.textContent = "Modifier";
-    document.getElementById("point-id").value = existingItem._id;
-
-    // Remplir les données existantes
-    document.getElementById("point-name").value = existingItem.name;
-    document.getElementById("point-cuisine").value = existingItem.cuisine;
-    document.getElementById("point-borough").value =
-      existingItem.borough || "Unknown";
-  } else {
-    // --- Mode AJOUT (POST) ---
-    modalTitle.textContent = "Ajouter un nouveau restaurant";
-    submitBtn.textContent = "Ajouter";
-    document.getElementById("point-id").value = ""; // Assurez-vous que l'ID est vide
-
-    // Vider les champs pour un nouvel ajout
-    document.getElementById("point-form").reset();
-  }
-
-  // Afficher les coordonnées sélectionnées
-  coordsDisplay.textContent = `Lat: ${parseFloat(lat).toFixed(
-    4
-  )}, Lng: ${parseFloat(lng).toFixed(4)}`;
-
-  openModal();
-}
-
-// Fonction pour envoyer les données à l'API (POST ou PUT)
-async function submitPoint(data, id = null, method) {
-  const url = id ? `${API_URL}/${id}` : API_URL;
-
-  try {
-    const response = await fetch(url, {
-      method: method,
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(data),
-    });
-
-    if (response.ok) {
-      alert(`Point ${method === "POST" ? "ajouté" : "modifié"} avec succès !`);
-      loadPoints(); // Rafraîchir la carte après succès
-      // Enlever le marqueur temporaire après l'ajout
-      if (tempMarker) map.removeLayer(tempMarker);
-    } else {
-      const errorData = await response.json();
-      alert(
-        `Erreur (${response.status}) : ${
-          errorData.message || "La requête a échoué"
-        }`
-      );
-    }
-  } catch (error) {
-    console.error(`Erreur ${method}:`, error);
-    alert("Erreur de connexion au serveur.");
-  }
-}
-
-// Fonction pour gérer l'édition (appelée depuis le Popup)
-function handleEdit(id) {
-  // Trouver les données du point à partir du LayerGroup
-  let itemToEdit = null;
-  markers.eachLayer((layer) => {
-    if (layer.itemData && layer.itemData._id === id) {
-      itemToEdit = layer.itemData;
-    }
+function populateSelectFilter(data, key, elementId) {
+  const uniqueValues = new Set();
+  data.forEach((item) => {
+    if (item[key]) uniqueValues.add(item[key]);
   });
-
-  if (itemToEdit) {
-    const [lng, lat] = itemToEdit.address.coord.coordinates;
-    openAddForm(lng, lat, itemToEdit);
-  } else {
-    alert("Données du point à éditer introuvables.");
-  }
+  const select = document.getElementById(elementId);
+  select.innerHTML = `<option value="">Tout afficher</option>`;
+  Array.from(uniqueValues)
+    .sort()
+    .forEach((val) => {
+      const option = document.createElement("option");
+      option.value = val;
+      option.textContent = val;
+      select.appendChild(option);
+    });
 }
 
-// Fonction pour appliquer tous les filtres actifs
 function applyFilters() {
-  // Récupération des deux valeurs de filtre (la valeur du <select> est un string)
-  const selectedCuisine = document.getElementById("cuisine-filter").value;
-  const selectedBorough = document.getElementById("borough-filter").value;
-
   if (!window.allRestaurantData) return;
 
-  let filteredData = window.allRestaurantData;
+  const cuisineVal = document.getElementById("cuisine-filter").value;
+  const boroughVal = document.getElementById("borough-filter").value;
+  const scoreVal = document.getElementById("score-filter").value;
 
-  // 1. Filtre par Cuisine (conserve la logique existante)
-  if (selectedCuisine) {
-    filteredData = filteredData.filter(
-      (item) => item.cuisine === selectedCuisine
-    );
+  let filtered = window.allRestaurantData;
+
+  if (cuisineVal) filtered = filtered.filter((i) => i.cuisine === cuisineVal);
+  if (boroughVal) filtered = filtered.filter((i) => i.borough === boroughVal);
+  if (scoreVal) {
+    const [min, max] = scoreVal.split("-").map(Number);
+    filtered = filtered.filter((i) => {
+      const s = getRecentScore(i.grades);
+      return s !== 999 && s >= min && s <= max;
+    });
   }
 
-  // 2. Filtre par Quartier (Borough)
-  if (selectedBorough) {
-    // Vérifie si une valeur a été sélectionnée (différent de la chaîne vide "")
-    filteredData = filteredData.filter(
-      (item) => item.borough === selectedBorough
-    );
-  }
-  renderPoints(filteredData);
+  if (heatmapActive) updateHeatmapData(filtered);
+  else renderPoints(filtered);
+
+  // 🚨 Mise à jour dynamique des graphiques selon le filtre
+  updateCharts(filtered);
 }
 
-async function displayStatistics() {
-  const topStatsContainer = document.getElementById("top-stats-container");
-  const fullStatsContainer = document.getElementById("full-stats-container");
+// ==========================================
+// 6. CRUD
+// ==========================================
 
-  topStatsContainer.innerHTML = "<p>Chargement en cours...</p>";
-  fullStatsContainer.innerHTML = ""; // Vider le conteneur du collapse
+function openAddForm(lng, lat, existingItem = null) {
+  document.getElementById("point-lng").value = lng;
+  document.getElementById("point-lat").value = lat;
+  document.getElementById("coords-display").textContent = `${parseFloat(
+    lat
+  ).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
+  const title = document.getElementById("modal-title");
+  const btn = document.getElementById("submit-btn");
 
-  try {
-    const response = await fetch(API_STATS_URL);
-    if (!response.ok) throw new Error("Erreur de chargement des statistiques");
-
-    let stats = await response.json();
-
-    // 🚨 CRITÈRE : Tri par score moyen (croissant, car 2 est meilleur que 20)
-    stats.sort((a, b) => a.averageScore - b.averageScore);
-
-    // 🚨 CRITÈRE : Afficher seulement les 5 meilleurs
-    const top5Stats = stats.slice(0, 5);
-
-    // Générer le HTML pour le Top 5
-    topStatsContainer.innerHTML = createStatsTableHTML(top5Stats, false);
-
-    // Générer le HTML pour le tableau complet (dans le Collapse)
-    fullStatsContainer.innerHTML = createStatsTableHTML(stats, true);
-  } catch (error) {
-    console.error("Erreur lors de l'affichage des statistiques:", error);
-    topStatsContainer.innerHTML = `<p class="text-danger">Erreur: Impossible de charger les analyses (${error.message}).</p>`;
+  if (existingItem) {
+    title.textContent = "Modifier";
+    btn.textContent = "Mettre à jour";
+    document.getElementById("point-id").value = existingItem._id;
+    document.getElementById("point-name").value = existingItem.name;
+    document.getElementById("point-cuisine").value = existingItem.cuisine;
+    document.getElementById("point-borough").value = existingItem.borough || "";
+  } else {
+    title.textContent = "Ajouter";
+    btn.textContent = "Ajouter";
+    document.getElementById("point-id").value = "";
+    document.getElementById("point-form").reset();
   }
-}
-const style = document.createElement("style");
-style.innerHTML = `
-    #stats-output table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    #stats-output th, #stats-output td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    #stats-output th { background-color: #f2f2f2; }
-`;
-document.head.appendChild(style);
-
-function openModal() {
   pointModal.show();
 }
 
+async function submitPoint(data, id, method) {
+  const url = id ? `${API_URL}/${id}` : API_URL;
+  try {
+    const response = await fetch(url, {
+      method: method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (response.ok) {
+      alert("Opération réussie !");
+      closeModal();
+      loadPoints();
+    } else {
+      alert("Erreur serveur.");
+    }
+  } catch (err) {
+    alert("Erreur connexion.");
+  }
+}
+
+async function handleDelete(id) {
+  if (!confirm("Supprimer ?")) return;
+  try {
+    const res = await fetch(`${API_URL}/${id}`, { method: "DELETE" });
+    if (res.ok) loadPoints();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function handleEdit(id) {
+  let targetItem = null;
+  markersLayer.eachLayer((layer) => {
+    if (layer.itemData && layer.itemData._id === id)
+      targetItem = layer.itemData;
+  });
+  if (!targetItem) {
+    nearbyMarkersLayer.eachLayer((layer) => {
+      if (layer.options.itemData && layer.options.itemData._id === id)
+        targetItem = layer.options.itemData;
+    });
+  }
+  if (targetItem) {
+    const [lng, lat] = targetItem.address.coord.coordinates;
+    openAddForm(lng, lat, targetItem);
+  } else {
+    alert("Données introuvables");
+  }
+}
+
 function closeModal() {
-  // Utiliser la méthode hide() de Bootstrap
   pointModal.hide();
   document.getElementById("point-form").reset();
-  // Supprimer le marqueur temporaire si la modale est fermée
   if (tempMarker) map.removeLayer(tempMarker);
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  // Écouteur pour le formulaire de soumission
-  document
-    .getElementById("point-form")
-    .addEventListener("submit", function (e) {
-      e.preventDefault(); // Empêcher l'envoi classique du formulaire
+// ==========================================
+// 7. STATISTIQUES (TABLEAU)
+// ==========================================
 
-      // Récupérer les valeurs des champs
+function createStatsTable(stats, full = false) {
+  let html = `<table class="table table-sm table-striped table-hover"><thead class="table-dark"><tr><th>Cuisine</th><th>Note Moyenne</th>${
+    full ? "<th>Qté</th>" : ""
+  }</tr></thead><tbody>`;
+  stats.forEach((s) => {
+    const score = s.averageScore.toFixed(2);
+    let colorClass =
+      s.averageScore < 7
+        ? "text-success fw-bold"
+        : s.averageScore < 15
+        ? "text-warning fw-bold"
+        : "text-danger fw-bold";
+    html += `<tr><td>${s._id}</td><td class="${colorClass}">${score}</td>${
+      full ? `<td>${s.count}</td>` : ""
+    }</tr>`;
+  });
+  return html + "</tbody></table>";
+}
+
+async function displayStatistics() {
+  const topDiv = document.getElementById("top-stats-container");
+  const fullDiv = document.getElementById("full-stats-container");
+  try {
+    const res = await fetch(API_STATS_URL);
+    if (!res.ok) throw new Error("Erreur Stats");
+    let stats = await res.json();
+    stats.sort((a, b) => a.averageScore - b.averageScore);
+    if (topDiv) topDiv.innerHTML = createStatsTable(stats.slice(0, 5), false);
+    if (fullDiv) fullDiv.innerHTML = createStatsTable(stats, true);
+  } catch (err) {}
+}
+
+// ==========================================
+// 8. 📊 GRAPHIQUES DYNAMIQUES (CHART.JS)
+// ==========================================
+
+function openChartsModal() {
+  chartsModal.show();
+}
+
+/**
+ * Calcule les données et met à jour les graphiques Chart.js
+ * @param {Array} data - Les données filtrées actuelles
+ */
+function updateCharts(data) {
+  // --- GRAPHIQUE 1 : TOP CUISINES (BAR) ---
+  // (Inchangé : montre les top cuisines de la sélection actuelle)
+  const cuisineCounts = {};
+  data.forEach((item) => {
+    if (item.cuisine)
+      cuisineCounts[item.cuisine] = (cuisineCounts[item.cuisine] || 0) + 1;
+  });
+
+  const sortedCuisines = Object.entries(cuisineCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10);
+
+  const cuisineLabels = sortedCuisines.map((c) => c[0]);
+  const cuisineValues = sortedCuisines.map((c) => c[1]);
+
+  const ctxCuisine = document.getElementById("cuisineChart");
+  if (ctxCuisine) {
+    if (chartsInstances.cuisine) chartsInstances.cuisine.destroy();
+    chartsInstances.cuisine = new Chart(ctxCuisine, {
+      type: "bar",
+      data: {
+        labels: cuisineLabels,
+        datasets: [
+          {
+            label: "Nombre de restaurants",
+            data: cuisineValues,
+            backgroundColor: "rgba(54, 162, 235, 0.6)",
+            borderColor: "rgba(54, 162, 235, 1)",
+            borderWidth: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        scales: { y: { beginAtZero: true } },
+        plugins: {
+          title: {
+            display: true,
+            text: "Top 10 Cuisines (Sélection actuelle)",
+          },
+        },
+      },
+    });
+  }
+
+  // --- GRAPHIQUE 2 : DOUGHNUT (QUARTIERS OU CUISINES) ---
+  // Logique conditionnelle demandée
+  const selectedBorough = document.getElementById("borough-filter").value;
+  const ctxBorough = document.getElementById("boroughChart");
+
+  if (ctxBorough) {
+    if (chartsInstances.borough) chartsInstances.borough.destroy();
+
+    let dLabels = [];
+    let dValues = [];
+    let dTitle = "";
+
+    if (selectedBorough) {
+      // CAS A : Quartier sélectionné -> Montrer les Cuisines dans ce quartier
+      dTitle = `Répartition des Cuisines (${selectedBorough})`;
+
+      // On réutilise cuisineCounts calculé ci-dessus, mais on s'assure qu'il concerne bien les données filtrées
+      // data contient déjà uniquement les restaurants du quartier si le filtre est actif
+
+      // On reprend le Top 10 pour le doughnut aussi pour éviter d'avoir 50 segments illisibles
+      dLabels = cuisineLabels;
+      dValues = cuisineValues;
+    } else {
+      // CAS B : Pas de quartier sélectionné -> Montrer la répartition par Quartier
+      dTitle = "Répartition par Quartier";
+      const boroughCounts = {};
+      data.forEach((item) => {
+        if (item.borough)
+          boroughCounts[item.borough] = (boroughCounts[item.borough] || 0) + 1;
+      });
+
+      const sortedBoroughs = Object.entries(boroughCounts).sort(
+        (a, b) => b[1] - a[1]
+      );
+      dLabels = sortedBoroughs.map((b) => b[0]);
+      dValues = sortedBoroughs.map((b) => b[1]);
+    }
+
+    chartsInstances.borough = new Chart(ctxBorough, {
+      type: "doughnut",
+      data: {
+        labels: dLabels,
+        datasets: [
+          {
+            label: "Nombre de restaurants",
+            data: dValues,
+            backgroundColor: [
+              "#FF6384",
+              "#36A2EB",
+              "#FFCE56",
+              "#4BC0C0",
+              "#9966FF",
+              "#FF9F40",
+              "#E7E9ED",
+              "#76A346",
+              "#FDB45C",
+              "#949FB1",
+            ],
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: "bottom" },
+          title: { display: true, text: dTitle },
+        },
+      },
+    });
+  }
+}
+
+// ==========================================
+// 9. MODES AVANCÉS
+// ==========================================
+
+function toggleHeatmap() {
+  heatmapActive = !heatmapActive;
+  const btn = document.getElementById("heatmap-btn");
+  if (heatmapActive) {
+    if (btn) btn.className = "btn btn-danger text-white";
+    markersLayer.clearLayers();
+    updateHeatmapData(window.allRestaurantData);
+  } else {
+    if (btn) btn.className = "btn btn-outline-danger";
+    if (heatLayer) map.removeLayer(heatLayer);
+    applyFilters();
+  }
+}
+
+function updateHeatmapData(data) {
+  if (!heatmapActive) return;
+  if (heatLayer) map.removeLayer(heatLayer);
+  const heatPoints = data
+    .filter((i) => i.address?.coord?.coordinates)
+    .map((i) => [
+      i.address.coord.coordinates[1],
+      i.address.coord.coordinates[0],
+      0.5,
+    ]);
+
+  if (L.heatLayer)
+    heatLayer = L.heatLayer(heatPoints, {
+      radius: 25,
+      blur: 15,
+      maxZoom: 17,
+    }).addTo(map);
+}
+
+function toggleNearbyMode() {
+  searchModeActive = !searchModeActive;
+  const btn = document.getElementById("nearby-btn");
+  if (searchModeActive) {
+    if (btn) {
+      btn.className = "btn btn-info text-white";
+      btn.innerHTML = "❌ Annuler";
+    }
+    if (heatmapActive) toggleHeatmap();
+    alert("Cliquez sur la carte pour trouver les restaurants à 1km.");
+  } else {
+    if (btn) {
+      btn.className = "btn btn-outline-info";
+      btn.innerHTML = "🎯 Proximité (1km)";
+    }
+    nearbyMarkersLayer.clearLayers();
+    if (nearbyCircle) map.removeLayer(nearbyCircle);
+    applyFilters();
+  }
+}
+
+async function performNearbySearch(lat, lng) {
+  const radiusMeters = 1000;
+  nearbyMarkersLayer.clearLayers();
+  if (nearbyCircle) map.removeLayer(nearbyCircle);
+  markersLayer.clearLayers();
+
+  nearbyCircle = L.circle([lat, lng], {
+    color: "#0dcaf0",
+    fillColor: "#0dcaf0",
+    fillOpacity: 0.1,
+    radius: radiusMeters,
+  }).addTo(map);
+  map.flyTo([lat, lng], 14);
+
+  L.marker([lat, lng])
+    .addTo(nearbyMarkersLayer)
+    .bindPopup("<b>📍 Centre de recherche</b>")
+    .openPopup();
+
+  try {
+    const res = await fetch(
+      `${API_NEARBY_URL}?lng=${lng}&lat=${lat}&distance=${radiusMeters}`
+    );
+    const points = await res.json();
+
+    let newCount = 0;
+    points.forEach((p) => {
+      const exists = window.allRestaurantData.find(
+        (local) => local._id === p._id
+      );
+      if (!exists) {
+        window.allRestaurantData.push(p);
+        newCount++;
+      }
+
+      const [plng, plat] = p.address.coord.coordinates;
+      const dist = p.dist.calculated.toFixed(0);
+
+      // 🚨 MODIFICATION : Utilisation du style standard (getMarkerStyle) au lieu du violet fixe
+      const m = L.circleMarker([plat, plng], getMarkerStyle(p)).addTo(
+        nearbyMarkersLayer
+      );
+
+      m.options.itemData = p;
+      m.bindPopup(
+        `<strong>${p.name}</strong><br><span class="badge bg-secondary">${p.cuisine}</span><br>Distance: <b>${dist} m</b>`
+      );
+    });
+    const topStats = document.getElementById("top-stats-container");
+    if (topStats)
+      topStats.innerHTML = `<div class="alert alert-info">🎯 <strong>${points.length}</strong> trouvés.</div>`;
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function handleMapClick(e) {
+  const { lat, lng } = e.latlng;
+  if (searchModeActive) {
+    performNearbySearch(lat, lng);
+    return;
+  }
+  if (heatmapActive) return;
+  if (tempMarker) map.removeLayer(tempMarker);
+  tempMarker = L.marker([lat, lng])
+    .addTo(map)
+    .bindPopup(
+      `Position choisie<br><button class="btn btn-sm btn-success mt-1" onclick="openAddForm('${lng}', '${lat}')">Ajouter ici</button>`
+    )
+    .openPopup();
+}
+
+// ==========================================
+// 10. INITIALISATION DOM
+// ==========================================
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Modales
+  const modalEl = document.getElementById("point-modal");
+  if (modalEl)
+    pointModal = new bootstrap.Modal(modalEl, { backdrop: "static" });
+
+  const chartsEl = document.getElementById("charts-modal");
+  if (chartsEl) chartsModal = new bootstrap.Modal(chartsEl, {});
+
+  // Filtres
+  const cuisineF = document.getElementById("cuisine-filter");
+  if (cuisineF) cuisineF.addEventListener("change", applyFilters);
+  const boroughF = document.getElementById("borough-filter");
+  if (boroughF) boroughF.addEventListener("change", applyFilters);
+  const scoreF = document.getElementById("score-filter");
+  if (scoreF) scoreF.addEventListener("change", applyFilters);
+
+  // Carte
+  map.on("click", handleMapClick);
+
+  // Formulaire
+  const form = document.getElementById("point-form");
+  if (form) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
       const id = document.getElementById("point-id").value;
       const lng = parseFloat(document.getElementById("point-lng").value);
       const lat = parseFloat(document.getElementById("point-lat").value);
-
-      // Construire l'objet de données
-      const data = {
+      const payload = {
         name: document.getElementById("point-name").value,
         cuisine: document.getElementById("point-cuisine").value,
         borough: document.getElementById("point-borough").value,
-        address: {
-          coord: {
-            type: "Point",
-            coordinates: [lng, lat], // [lng, lat]
-          },
-        },
-        // Le champ grades est nécessaire pour ne pas générer d'erreur de validation MongoDB
+        address: { coord: { type: "Point", coordinates: [lng, lat] } },
         grades: [],
       };
-
-      // Déterminer la méthode (PUT si ID présent, POST sinon)
-      const method = id ? "PUT" : "POST";
-
-      // Appel à la fonction qui envoie la requête à l'API
-      submitPoint(data, id, method);
-
-      closeModal();
+      submitPoint(payload, id, id ? "PUT" : "POST");
     });
-});
+  }
 
-loadPoints();
-displayStatistics();
+  // Lancement
+  loadPoints();
+  displayStatistics();
+});
