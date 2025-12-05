@@ -54,7 +54,7 @@ const nearbyMarkersLayer = L.layerGroup().addTo(map);
 
 // Modales Bootstrap
 let pointModal;
-let chartsModal; // 🚨 NOUVEAU
+let chartsModal;
 
 // ==========================================
 // 3. UTILITAIRES
@@ -126,7 +126,6 @@ async function loadPoints() {
     if (heatmapActive) updateHeatmapData(data);
     else renderPoints(data);
 
-    // Mettre à jour les graphiques avec les données initiales
     updateCharts(data);
   } catch (error) {
     console.error("Erreur loadPoints:", error);
@@ -211,7 +210,6 @@ function applyFilters() {
   if (heatmapActive) updateHeatmapData(filtered);
   else renderPoints(filtered);
 
-  // 🚨 Mise à jour dynamique des graphiques selon le filtre
   updateCharts(filtered);
 }
 
@@ -346,11 +344,10 @@ function openChartsModal() {
 
 /**
  * Calcule les données et met à jour les graphiques Chart.js
- * @param {Array} data - Les données filtrées actuelles
+ * @param {Array} data Les données filtrées des restaurants
  */
 function updateCharts(data) {
   // --- GRAPHIQUE 1 : TOP CUISINES (BAR) ---
-  // (Inchangé : montre les top cuisines de la sélection actuelle)
   const cuisineCounts = {};
   data.forEach((item) => {
     if (item.cuisine)
@@ -395,7 +392,6 @@ function updateCharts(data) {
   }
 
   // --- GRAPHIQUE 2 : DOUGHNUT (QUARTIERS OU CUISINES) ---
-  // Logique conditionnelle demandée
   const selectedBorough = document.getElementById("borough-filter").value;
   const ctxBorough = document.getElementById("boroughChart");
 
@@ -407,17 +403,11 @@ function updateCharts(data) {
     let dTitle = "";
 
     if (selectedBorough) {
-      // CAS A : Quartier sélectionné -> Montrer les Cuisines dans ce quartier
       dTitle = `Répartition des Cuisines (${selectedBorough})`;
 
-      // On réutilise cuisineCounts calculé ci-dessus, mais on s'assure qu'il concerne bien les données filtrées
-      // data contient déjà uniquement les restaurants du quartier si le filtre est actif
-
-      // On reprend le Top 10 pour le doughnut aussi pour éviter d'avoir 50 segments illisibles
       dLabels = cuisineLabels;
       dValues = cuisineValues;
     } else {
-      // CAS B : Pas de quartier sélectionné -> Montrer la répartition par Quartier
       dTitle = "Répartition par Quartier";
       const boroughCounts = {};
       data.forEach((item) => {
@@ -562,7 +552,6 @@ async function performNearbySearch(lat, lng) {
       const [plng, plat] = p.address.coord.coordinates;
       const dist = p.dist.calculated.toFixed(0);
 
-      // 🚨 MODIFICATION : Utilisation du style standard (getMarkerStyle) au lieu du violet fixe
       const m = L.circleMarker([plat, plng], getMarkerStyle(p)).addTo(
         nearbyMarkersLayer
       );

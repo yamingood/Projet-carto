@@ -1,10 +1,8 @@
 /* Fichier : public/style.css */
-
-/* Styles généraux de la Modale */
 .modal {
-  display: none; /* Masquée par défaut */
+  display: none;
   position: fixed;
-  z-index: 1050 !important; /* Assurez-vous qu'elle est au-dessus de la carte */
+  z-index: 1050 !important;
   left: 0;
   top: 0;
   width: 100%;

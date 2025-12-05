@@ -16,14 +16,8 @@ const handleError = (res, err) => {
 // 1. Routes CRUD /api/items
 // ===================================
 
-/**
- * GET /api/items
- * Renvoie tous les points (avec une limite raisonnable pour le front)[cite: 15].
- */
 router.get("/items", async (req, res) => {
   try {
-    // Limitation conseillée : Le jeu de données est très grand.
-    // Vous pouvez ajuster cette limite ou ajouter une pagination/filtrage.
     const items = await Restaurant.find();
     res.status(200).json(items);
   } catch (err) {
@@ -31,10 +25,6 @@ router.get("/items", async (req, res) => {
   }
 });
 
-/**
- * GET /api/items/:id
- * Renvoie un point spécifique[cite: 16, 19].
- */
 router.get("/items/:id", async (req, res) => {
   try {
     const item = await Restaurant.findById(req.params.id);
@@ -47,10 +37,6 @@ router.get("/items/:id", async (req, res) => {
   }
 });
 
-/**
- * POST /api/items
- * Ajoute un nouveau point[cite: 17, 20].
- */
 router.post("/items", async (req, res) => {
   // Validation minimale des données requise[cite: 25].
   if (
@@ -73,16 +59,12 @@ router.post("/items", async (req, res) => {
   }
 });
 
-/**
- * PUT /api/items/:id
- * Modifie un point existant[cite: 18, 21].
- */
 router.put("/items/:id", async (req, res) => {
   try {
     const updatedItem = await Restaurant.findByIdAndUpdate(
       req.params.id,
       req.body,
-      { new: true, runValidators: true } // Renvoie le document mis à jour et lance les validations du schéma
+      { new: true, runValidators: true }
     );
     if (!updatedItem) {
       return res.status(404).json({ message: "Point non trouvé" });
@@ -93,10 +75,6 @@ router.put("/items/:id", async (req, res) => {
   }
 });
 
-/**
- * DELETE /api/items/:id
- * Supprime un point[cite: 23].
- */
 router.delete("/items/:id", async (req, res) => {
   try {
     const deletedItem = await Restaurant.findByIdAndDelete(req.params.id);
@@ -115,10 +93,6 @@ router.delete("/items/:id", async (req, res) => {
 // 2. Routes d'Analyses Statistiques
 // ===================================
 
-/**
- * GET /api/stats/scores-by-cuisine
- * Exemple d'analyse : Score moyen par type de cuisine[cite: 70].
- */
 router.get("/stats/scores-by-cuisine", async (req, res) => {
   try {
     const stats = await Restaurant.aggregate([
@@ -142,11 +116,6 @@ router.get("/stats/scores-by-cuisine", async (req, res) => {
   }
 });
 
-/**
- * GET /api/stats/nearby-points
- * Exemple d'analyse : Recherche de points proches (requête géospatiale)[cite: 72].
- * Nécessite les paramètres de requête: ?lng=-73.856077&lat=40.848447&distance=1000
- */
 router.get("/stats/nearby-points", async (req, res) => {
   const { lng, lat, distance = 400 } = req.query; // distance en mètres par défaut
 
@@ -164,7 +133,7 @@ router.get("/stats/nearby-points", async (req, res) => {
             type: "Point",
             coordinates: [parseFloat(lng), parseFloat(lat)],
           },
-          distanceField: "dist.calculated", // Stocke la distance calculée ici
+          distanceField: "dist.calculated", // Stocke la distance calculée
           maxDistance: parseInt(distance), // Distance maximale en mètres
           spherical: true, // Indique que la géométrie est sphérique (terre)
         },
